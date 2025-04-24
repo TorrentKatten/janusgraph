@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>org.janusgraph</groupId>
     <artifactId>janusgraph</artifactId>
-    <version>0.6.5-SNAPSHOT</version>
+    <version>0.6.5-BN-JDK11</version>
     <packaging>pom</packaging>
     <prerequisites>
         <maven>3.2.5</maven>
@@ -115,7 +115,7 @@
         <easymock.version>5.2.0</easymock.version>
         <protobuf.version>3.22.3</protobuf.version>
         <grpc.version>1.57.2</grpc.version>
-        <protoc.version>3.15.3</protoc.version>
+        <protoc.version>3.20.2</protoc.version>
         <gson.version>2.10.1</gson.version>
         <jcabi.version>1.2.1</jcabi.version>
         <jmh.version>1.21</jmh.version>

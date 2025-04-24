@@ -3,7 +3,7 @@
     <parent>
         <groupId>org.janusgraph</groupId>
         <artifactId>janusgraph</artifactId>
-        <version>0.6.5-SNAPSHOT</version>
+        <version>0.6.5-BN-JDK11</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>janusgraph-all</artifactId>
@@ -145,6 +145,11 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-annotations</artifactId>
             <version>${jackson2.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 
