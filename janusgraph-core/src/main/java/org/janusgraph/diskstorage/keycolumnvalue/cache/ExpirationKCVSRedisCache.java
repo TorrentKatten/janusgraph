@@ -156,90 +156,6 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
         return entries;
     }
 
-    private interface ObjectSerializer {
-        <T> byte[] serialize(T obj);
-
-        <T> T deserialize(byte[] bytes);
-    }
-
-    private static class JsonSerializer implements ObjectSerializer {
-        private static final ObjectMapper objectMapper = new ObjectMapper();
-
-        @Override
-        public <T> byte[] serialize(T obj) {
-            if (obj == null) {
-                return null;
-            }
-            try {
-                return objectMapper.writeValueAsBytes(obj);
-            } catch (IOException e) {
-                logger.warn("Failed to serialize object", e);
-                throw new RuntimeException(e);
-            }
-        }
-
-        @Override
-        public <T> T deserialize(byte[] bytes) {
-            if (bytes == null) {
-                return null;
-            }
-            try {
-                return objectMapper.readValue(bytes, new TypeReference<T>() {
-                });
-            } catch (IOException e) {
-                logger.warn("Failed to deserialize object", e);
-                throw new RuntimeException(e);
-            }
-        }
-
-    }
-
-    private static class JavaSerializer implements ObjectSerializer {
-        @Override
-        public <T> byte[] serialize(T obj) {
-            if (obj == null) {
-                return null;
-            }
-            try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                 ObjectOutputStream oos = new ObjectOutputStream(baos)) {
-                oos.writeObject(obj);
-                return baos.toByteArray();
-            } catch (IOException e) {
-                logger.warn("Failed to serialize object", e);
-                throw new RuntimeException(e);
-            }
-        }
-
-        @Override
-        public <T> T deserialize(byte[] bytes) {
-            if (bytes == null) {
-                return null;
-            }
-            try (ByteArrayInputStream bais = new ByteArrayInputStream(bytes);
-                 ObjectInputStream ois = new ObjectInputStream(bais)) {
-                return (T) ois.readObject();
-            } catch (IOException | ClassNotFoundException e) {
-                logger.warn("Failed to deserialize object", e);
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
-    private static class FstSerializer implements ObjectSerializer {
-        private static final FSTConfiguration fastConf = FSTConfiguration.createDefaultConfiguration();
-
-        @Override
-        public <T> byte[] serialize(T obj) {
-            return fastConf.asByteArray(obj);
-        }
-
-        @Override
-        public <T> T deserialize(byte[] bytes) {
-            return (T) (bytes != null ? fastConf.asObject(bytes) : null);
-        }
-
-    }
-
     @Override
     public Map<StaticBuffer, EntryList> getSlice(final List<StaticBuffer> keys, final SliceQuery query, final StoreTransaction txh) throws BackendException {
         final Map<StaticBuffer, EntryList> results = new HashMap<>(keys.size());
@@ -301,6 +217,32 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
 
     @Override
     public void invalidate(StaticBuffer key, List<CachableStaticBuffer> entries) {
+        logger.info("Invalidating key {}, get lock in thread {}", key, Thread.currentThread().getId());
+        RLock lock = redisIndexKeys.getLock(key);
+        if (lock.isHeldByCurrentThread()) {
+            logger.info("Lock already held by current thread {}, proceeding with invalidation", Thread.currentThread().getId());
+            this.invalidateInternal(key, entries);
+        } else {
+            try {
+                if (lock.tryLock(1L, 2L, TimeUnit.SECONDS)) {
+                    logger.info("Lock acquired, held by thread {}, proceeding with invalidation", Thread.currentThread().getId());
+                    this.invalidateInternal(key, entries);
+                } else {
+                    logger.warn("Failed to acquire lock for key {}, held by another thread", key);
+                }
+            } catch (InterruptedException e) {
+                logger.warn("Interrupted while waiting for lock", e);
+                Thread.currentThread().interrupt();
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    logger.info("Releasing lock held by thread {}", Thread.currentThread().getId());
+                    lock.unlock();
+                }
+            }
+        }
+    }
+
+    private void invalidateInternal(StaticBuffer key, List<CachableStaticBuffer> entries) {
         List<KeySliceQuery> keySliceQueryList = redisIndexKeys.get(key);
         if (keySliceQueryList != null) {
             for (KeySliceQuery keySliceQuery : keySliceQueryList) {
@@ -391,5 +333,88 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
         }
     }
 
+    private interface ObjectSerializer {
+        <T> byte[] serialize(T obj);
+
+        <T> T deserialize(byte[] bytes);
+    }
+
+    private static class JsonSerializer implements ObjectSerializer {
+        private static final ObjectMapper objectMapper = new ObjectMapper();
+
+        @Override
+        public <T> byte[] serialize(T obj) {
+            if (obj == null) {
+                return null;
+            }
+            try {
+                return objectMapper.writeValueAsBytes(obj);
+            } catch (IOException e) {
+                logger.warn("Failed to serialize object", e);
+                throw new RuntimeException(e);
+            }
+        }
+
+        @Override
+        public <T> T deserialize(byte[] bytes) {
+            if (bytes == null) {
+                return null;
+            }
+            try {
+                return objectMapper.readValue(bytes, new TypeReference<T>() {
+                });
+            } catch (IOException e) {
+                logger.warn("Failed to deserialize object", e);
+                throw new RuntimeException(e);
+            }
+        }
+
+    }
+
+    private static class JavaSerializer implements ObjectSerializer {
+        @Override
+        public <T> byte[] serialize(T obj) {
+            if (obj == null) {
+                return null;
+            }
+            try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                 ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+                oos.writeObject(obj);
+                return baos.toByteArray();
+            } catch (IOException e) {
+                logger.warn("Failed to serialize object", e);
+                throw new RuntimeException(e);
+            }
+        }
+
+        @Override
+        public <T> T deserialize(byte[] bytes) {
+            if (bytes == null) {
+                return null;
+            }
+            try (ByteArrayInputStream bais = new ByteArrayInputStream(bytes);
+                 ObjectInputStream ois = new ObjectInputStream(bais)) {
+                return (T) ois.readObject();
+            } catch (IOException | ClassNotFoundException e) {
+                logger.warn("Failed to deserialize object", e);
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    private static class FstSerializer implements ObjectSerializer {
+        private static final FSTConfiguration fastConf = FSTConfiguration.createDefaultConfiguration();
+
+        @Override
+        public <T> byte[] serialize(T obj) {
+            return fastConf.asByteArray(obj);
+        }
+
+        @Override
+        public <T> T deserialize(byte[] bytes) {
+            return (T) (bytes != null ? fastConf.asObject(bytes) : null);
+        }
+
+    }
 
 }
