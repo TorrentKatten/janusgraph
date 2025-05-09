@@ -29,27 +29,35 @@ import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.RE
 
 public class RedissonCache {
 
-    private static String redisCacheHost;
-    private static int redisCachePort;
-    private static int connectionPoolSize;
-    private static int connectionMinimumIdleSize;
-    private static int connectTimeout;
-    private static boolean keepAlive;
+    private static class RedissonClientFactoryHolder {
+        private static RedissonClient redisson;
 
-    public static RedissonClient getRedissonClient(Configuration configuration) {
+        private static RedissonClient initRedisson(Configuration configuration) {
+            String redisCacheHost = configuration.get(REDIS_CACHE_HOST);
+            int redisCachePort = configuration.get(REDIS_CACHE_PORT);
+            int connectionPoolSize = configuration.get(REDIS_CACHE_CONNECTION_POOL_SIZE);
+            int connectionMinimumIdleSize = configuration.get(REDIS_CACHE_CONNECTION_MIN_IDLE_SIZE);
+            int connectTimeout = configuration.get(REDIS_CACHE_CONNECTION_TIME_OUT);
+            boolean keepAlive = configuration.get(REDIS_CACHE_KEEP_ALIVE);
 
-        redisCacheHost = configuration.get(REDIS_CACHE_HOST);
-        redisCachePort = configuration.get(REDIS_CACHE_PORT);
-        connectionPoolSize = configuration.get(REDIS_CACHE_CONNECTION_POOL_SIZE);
-        connectionMinimumIdleSize = configuration.get(REDIS_CACHE_CONNECTION_MIN_IDLE_SIZE);
-        connectTimeout = configuration.get(REDIS_CACHE_CONNECTION_TIME_OUT);
-        keepAlive = configuration.get(REDIS_CACHE_KEEP_ALIVE);
+            Config config = new Config();
+            config.useSingleServer().setAddress("redis://" + redisCacheHost + ":" + redisCachePort).setConnectionPoolSize(connectionPoolSize)
+                .setConnectionMinimumIdleSize(connectionMinimumIdleSize)
+                .setConnectTimeout(connectTimeout)
+                .setKeepAlive(keepAlive);
+            RedissonClient client = Redisson.create(config);
+            Runtime.getRuntime().addShutdownHook(new Thread(client::shutdown));
+            return client;
+        }
+    }
 
-        Config config = new Config();
-        config.useSingleServer().setAddress("redis://" + redisCacheHost + ":" + redisCachePort).setConnectionPoolSize(connectionPoolSize)
-            .setConnectionMinimumIdleSize(connectionMinimumIdleSize)
-            .setConnectTimeout(connectTimeout)
-            .setKeepAlive(keepAlive);
-        return Redisson.create(config);
+    private RedissonCache() {
+    }
+
+    public static synchronized RedissonClient getRedissonClient(Configuration configuration) {
+        if (RedissonClientFactoryHolder.redisson == null) {
+            RedissonClientFactoryHolder.redisson = RedissonClientFactoryHolder.initRedisson(configuration);
+        }
+        return RedissonClientFactoryHolder.redisson;
     }
 }

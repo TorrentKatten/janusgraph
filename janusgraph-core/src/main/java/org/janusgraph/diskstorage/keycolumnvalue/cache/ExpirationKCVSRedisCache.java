@@ -78,7 +78,7 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
     private final CleanupThread cleanupThread;
     private final RLocalCachedMap<KeySliceQuery, byte[]> redisCache;
     private final RLocalCachedMap<StaticBuffer, ArrayList<KeySliceQuery>> redisIndexKeys;
-    private static final Logger logger = LoggerFactory.getLogger("redis-logger");
+    private static final Logger logger = LoggerFactory.getLogger(ExpirationKCVSRedisCache.class);
     private static final ObjectSerializer serializer = new JavaSerializer();
 //    private static final ObjectSerializer serializer = new FstSerializer();
 //    private static final ObjectSerializer serializer = new JsonSerializer();
@@ -94,8 +94,12 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
         this.invalidationGracePeriodMS = invalidationGracePeriodMS;
 
         RedissonClient redissonClient = RedissonCache.getRedissonClient(configuration);
-        redisCache = redissonClient.getLocalCachedMap(REDIS_CACHE_PREFIX + metricsName, LocalCachedMapOptions.defaults());
-        redisIndexKeys = redissonClient.getLocalCachedMap(REDIS_INDEX_CACHE_PREFIX + metricsName, LocalCachedMapOptions.defaults());
+        redisCache = redissonClient.getLocalCachedMap(REDIS_CACHE_PREFIX + metricsName, LocalCachedMapOptions.<KeySliceQuery, byte[]>defaults()
+            .timeToLive(cacheTimeMS)
+            .evictionPolicy(LocalCachedMapOptions.EvictionPolicy.LRU));
+        redisIndexKeys = redissonClient.getLocalCachedMap(REDIS_INDEX_CACHE_PREFIX + metricsName, LocalCachedMapOptions.<StaticBuffer, ArrayList<KeySliceQuery>>defaults()
+            .timeToLive(cacheTimeMS)
+            .evictionPolicy(LocalCachedMapOptions.EvictionPolicy.LRU));
         expiredKeys = new ConcurrentHashMap<>(50, 0.75f, concurrencyLevel);
         penaltyCountdown = new CountDownLatch(PENALTY_THRESHOLD);
 
@@ -137,16 +141,25 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                     redisCache.fastPutAsync(query, serializer.serialize(entries));
                     RLock lock = redisIndexKeys.getLock(query.getKey());
                     try {
-                        lock.tryLock(1, 2, TimeUnit.SECONDS);
-                        ArrayList<KeySliceQuery> queryList = redisIndexKeys.get(query.getKey());
-                        if (queryList == null)
-                            queryList = new ArrayList<>();
-                        queryList.add(query);
-                        redisIndexKeys.fastPutAsync(query.getKey(), queryList);
+                        if (lock.tryLock(1, 2, TimeUnit.SECONDS)) {
+                            ArrayList<KeySliceQuery> queryList = redisIndexKeys.get(query.getKey());
+                            if (queryList == null) {
+                                queryList = new ArrayList<>();
+                            }
+                            queryList.add(query);
+                            redisIndexKeys.fastPutAsync(query.getKey(), queryList);
+                        } else {
+                            logger.warn("Failed to acquire lock for key {}", query.getKey());
+                        }
                     } catch (InterruptedException e) {
                         logger.warn("Interrupted while waiting for lock", e);
+                        Thread.currentThread().interrupt();
                     } finally {
-                        lock.unlock();
+                        if (lock.isHeldByCurrentThread()) {
+                            lock.unlock();
+                        } else {
+                            logger.warn("Lock not held by current thread, skipping unlock");
+                        }
                     }
                 }
             } catch (Exception e) {
@@ -190,16 +203,24 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                         redisCache.fastPutAsync(ksqs[i], serializer.serialize(subresult));
                         RLock lock = redisIndexKeys.getLock(ksqs[i].getKey());
                         try {
-                            lock.tryLock(1, 2, TimeUnit.SECONDS);
-                            ArrayList<KeySliceQuery> queryList = redisIndexKeys.get(ksqs[i].getKey());
-                            if (queryList == null)
-                                queryList = new ArrayList<>();
-                            queryList.add(ksqs[i]);
-                            redisIndexKeys.fastPut(ksqs[i].getKey(), queryList);
+                            if (lock.tryLock(1, 2, TimeUnit.SECONDS)) {
+                                ArrayList<KeySliceQuery> queryList = redisIndexKeys.get(ksqs[i].getKey());
+                                if (queryList == null)
+                                    queryList = new ArrayList<>();
+                                queryList.add(ksqs[i]);
+                                redisIndexKeys.fastPut(ksqs[i].getKey(), queryList);
+                            } else {
+                                logger.warn("Failed to acquire lock for key {}", ksqs[i].getKey());
+                            }
                         } catch (InterruptedException e) {
                             logger.warn("Interrupted while waiting for lock", e);
+                            Thread.currentThread().interrupt();
                         } finally {
-                            lock.unlock();
+                            if (lock.isHeldByCurrentThread()) {
+                                lock.unlock();
+                            } else {
+                                logger.warn("Lock not held by current thread, skipping unlock");
+                            }
                         }
                     }
                 }
@@ -216,36 +237,38 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
     }
 
     @Override
-    public void invalidate(StaticBuffer key, List<CachableStaticBuffer> entries) {
-        logger.info("Invalidating key {}, get lock in thread {}", key, Thread.currentThread().getId());
-        RLock lock = redisIndexKeys.getLock(key);
-        if (lock.isHeldByCurrentThread()) {
-            logger.info("Lock already held by current thread {}, proceeding with invalidation", Thread.currentThread().getId());
-            this.invalidateInternal(key, entries);
-        } else {
-            try {
-                if (lock.tryLock(1L, 2L, TimeUnit.SECONDS)) {
-                    logger.info("Lock acquired, held by thread {}, proceeding with invalidation", Thread.currentThread().getId());
-                    this.invalidateInternal(key, entries);
-                } else {
-                    logger.warn("Failed to acquire lock for key {}, held by another thread", key);
-                }
-            } catch (InterruptedException e) {
-                logger.warn("Interrupted while waiting for lock", e);
-                Thread.currentThread().interrupt();
-            } finally {
-                if (lock.isHeldByCurrentThread()) {
-                    logger.info("Releasing lock held by thread {}", Thread.currentThread().getId());
-                    lock.unlock();
-                }
-            }
-        }
-    }
+//    public void invalidate(StaticBuffer key, List<CachableStaticBuffer> entries) {
+//        logger.info("Invalidating key {}, get lock in thread {}", key, Thread.currentThread().getId());
+//        RLock lock = redisIndexKeys.getLock(key);
+//        if (lock.isHeldByCurrentThread()) {
+//            logger.info("Lock already held by current thread {}, proceeding with invalidation", Thread.currentThread().getId());
+//            this.invalidateInternal(key, entries);
+//        } else {
+//            try {
+//                if (lock.tryLock(1L, 2L, TimeUnit.SECONDS)) {
+//                    logger.info("Lock acquired, held by thread {}, proceeding with invalidation", Thread.currentThread().getId());
+//                    this.invalidateInternal(key, entries);
+//                } else {
+//                    logger.warn("Failed to acquire lock for key {}, held by another thread", key);
+//                }
+//            } catch (InterruptedException e) {
+//                logger.warn("Interrupted while waiting for lock", e);
+//                Thread.currentThread().interrupt();
+//            } finally {
+//                if (lock.isHeldByCurrentThread()) {
+//                    logger.info("Releasing lock held by thread {}", Thread.currentThread().getId());
+//                    lock.unlock();
+//                }
+//            }
+//        }
+//    }
 
-    private void invalidateInternal(StaticBuffer key, List<CachableStaticBuffer> entries) {
+    public void invalidate(StaticBuffer key, List<CachableStaticBuffer> entries) {
+        logger.info("Invalidating key {}", key);
         List<KeySliceQuery> keySliceQueryList = redisIndexKeys.get(key);
         if (keySliceQueryList != null) {
-            for (KeySliceQuery keySliceQuery : keySliceQueryList) {
+            List<KeySliceQuery> keySliceQueryListCopy = new ArrayList<>(keySliceQueryList);
+            for (KeySliceQuery keySliceQuery : keySliceQueryListCopy) {
                 if (key.equals(keySliceQuery.getKey())) {
                     redisCache.fastRemove(keySliceQuery);
                 }
