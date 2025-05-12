@@ -30,9 +30,8 @@ import org.janusgraph.diskstorage.keycolumnvalue.SliceQuery;
 import org.janusgraph.diskstorage.keycolumnvalue.StoreTransaction;
 import org.janusgraph.diskstorage.util.CacheMetricsAction;
 import org.nustaq.serialization.FSTConfiguration;
-import org.redisson.api.LocalCachedMapOptions;
-import org.redisson.api.RLocalCachedMap;
 import org.redisson.api.RLock;
+import org.redisson.api.RMapCache;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,8 +75,8 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
     private final long cacheTimeMS;
     private final long invalidationGracePeriodMS;
     private final CleanupThread cleanupThread;
-    private final RLocalCachedMap<KeySliceQuery, byte[]> redisCache;
-    private final RLocalCachedMap<StaticBuffer, ArrayList<KeySliceQuery>> redisIndexKeys;
+    private final RMapCache<KeySliceQuery, byte[]> redisCache;
+    private final RMapCache<StaticBuffer, ArrayList<KeySliceQuery>> redisIndexKeys;
     private static final Logger logger = LoggerFactory.getLogger(ExpirationKCVSRedisCache.class);
     private static final ObjectSerializer serializer = new JavaSerializer();
 //    private static final ObjectSerializer serializer = new FstSerializer();
@@ -94,12 +93,14 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
         this.invalidationGracePeriodMS = invalidationGracePeriodMS;
 
         RedissonClient redissonClient = RedissonCache.getRedissonClient(configuration);
-        redisCache = redissonClient.getLocalCachedMap(REDIS_CACHE_PREFIX + metricsName, LocalCachedMapOptions.<KeySliceQuery, byte[]>defaults()
-            .timeToLive(cacheTimeMS)
-            .evictionPolicy(LocalCachedMapOptions.EvictionPolicy.LRU));
-        redisIndexKeys = redissonClient.getLocalCachedMap(REDIS_INDEX_CACHE_PREFIX + metricsName, LocalCachedMapOptions.<StaticBuffer, ArrayList<KeySliceQuery>>defaults()
-            .timeToLive(cacheTimeMS)
-            .evictionPolicy(LocalCachedMapOptions.EvictionPolicy.LRU));
+        redisCache = redissonClient.getMapCache(REDIS_CACHE_PREFIX + metricsName);
+        redisCache.setMaxSize(50000);
+//        , LocalCachedMapOptions.<KeySliceQuery, byte[]>defaults()
+//            .timeToLive(cacheTimeMS)
+//            .evictionPolicy(LocalCachedMapOptions.EvictionPolicy.LRU));
+        redisIndexKeys = redissonClient.getMapCache(REDIS_INDEX_CACHE_PREFIX + metricsName);
+        redisIndexKeys.setMaxSize(50000);
+
         expiredKeys = new ConcurrentHashMap<>(50, 0.75f, concurrencyLevel);
         penaltyCountdown = new CountDownLatch(PENALTY_THRESHOLD);
 
@@ -138,7 +139,7 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                 if (entries == null) {
                     throw new CacheLoader.InvalidCacheLoadException("valueLoader must not return null, key=" + query);
                 } else {
-                    redisCache.fastPutAsync(query, serializer.serialize(entries));
+                    redisCache.fastPutAsync(query, serializer.serialize(entries), cacheTimeMS, TimeUnit.MILLISECONDS);
                     RLock lock = redisIndexKeys.getLock(query.getKey());
                     try {
                         if (lock.tryLock(1, 2, TimeUnit.SECONDS)) {
@@ -147,7 +148,7 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                                 queryList = new ArrayList<>();
                             }
                             queryList.add(query);
-                            redisIndexKeys.fastPutAsync(query.getKey(), queryList);
+                            redisIndexKeys.fastPutAsync(query.getKey(), queryList, cacheTimeMS, TimeUnit.MILLISECONDS);
                         } else {
                             logger.warn("Failed to acquire lock for key {}", query.getKey());
                         }
@@ -185,7 +186,9 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                 bytResult = redisCache.get(ksqs[i]);
                 result = bytResult != null ? (EntryList) serializer.deserialize(bytResult) : null;
             } else ksqs[i] = null;
-            if (result != null) results.put(key, result);
+            if (result != null) {
+                results.put(key, result);
+            }
             else remainingKeys.add(key);
         }
         //Request remaining ones from backend
@@ -200,7 +203,7 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                     results.put(key, subresult);
                     if (ksqs[i] != null) {
                         logger.info("adding to cache subresult {}", subresult);
-                        redisCache.fastPutAsync(ksqs[i], serializer.serialize(subresult));
+                        redisCache.fastPutAsync(ksqs[i], serializer.serialize(subresult), cacheTimeMS, TimeUnit.MILLISECONDS);
                         RLock lock = redisIndexKeys.getLock(ksqs[i].getKey());
                         try {
                             if (lock.tryLock(1, 2, TimeUnit.SECONDS)) {
@@ -208,7 +211,7 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                                 if (queryList == null)
                                     queryList = new ArrayList<>();
                                 queryList.add(ksqs[i]);
-                                redisIndexKeys.fastPut(ksqs[i].getKey(), queryList);
+                                redisIndexKeys.fastPut(ksqs[i].getKey(), queryList, cacheTimeMS, TimeUnit.MILLISECONDS);
                             } else {
                                 logger.warn("Failed to acquire lock for key {}", ksqs[i].getKey());
                             }
@@ -328,6 +331,9 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                 }
                 //Do clean up work by invalidating all entries for expired keys
                 final Map<StaticBuffer, Long> expiredKeysCopy = new HashMap<>(expiredKeys.size());
+                if (!expiredKeys.isEmpty()) {
+                    logger.info("Expiring {} keys from cache", expiredKeys.size());
+                }
                 for (Map.Entry<StaticBuffer, Long> expKey : expiredKeys.entrySet()) {
                     if (isBeyondExpirationTime(expKey.getValue()))
                         expiredKeys.remove(expKey.getKey(), expKey.getValue());
