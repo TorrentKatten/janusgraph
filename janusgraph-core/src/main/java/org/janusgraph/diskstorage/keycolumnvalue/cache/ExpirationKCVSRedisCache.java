@@ -95,9 +95,7 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
         RedissonClient redissonClient = RedissonCache.getRedissonClient(configuration);
         redisCache = redissonClient.getMapCache(REDIS_CACHE_PREFIX + metricsName);
         redisCache.setMaxSize(50000);
-//        , LocalCachedMapOptions.<KeySliceQuery, byte[]>defaults()
-//            .timeToLive(cacheTimeMS)
-//            .evictionPolicy(LocalCachedMapOptions.EvictionPolicy.LRU));
+
         redisIndexKeys = redissonClient.getMapCache(REDIS_INDEX_CACHE_PREFIX + metricsName);
         redisIndexKeys.setMaxSize(50000);
 
@@ -133,35 +131,12 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
         byte[] bytQuery = redisCache.get(query);
         EntryList entries = serializer.deserialize(bytQuery);
         if (entries == null) {
-            logger.debug("reading from the store.................");
             try {
                 entries = valueLoader.call();
                 if (entries == null) {
                     throw new CacheLoader.InvalidCacheLoadException("valueLoader must not return null, key=" + query);
                 } else {
-                    redisCache.fastPutAsync(query, serializer.serialize(entries), cacheTimeMS, TimeUnit.MILLISECONDS);
-                    RLock lock = redisIndexKeys.getLock(query.getKey());
-                    try {
-                        if (lock.tryLock(1, 2, TimeUnit.SECONDS)) {
-                            ArrayList<KeySliceQuery> queryList = redisIndexKeys.get(query.getKey());
-                            if (queryList == null) {
-                                queryList = new ArrayList<>();
-                            }
-                            queryList.add(query);
-                            redisIndexKeys.fastPutAsync(query.getKey(), queryList, cacheTimeMS, TimeUnit.MILLISECONDS);
-                        } else {
-                            logger.warn("Failed to acquire lock for key {}", query.getKey());
-                        }
-                    } catch (InterruptedException e) {
-                        logger.warn("Interrupted while waiting for lock", e);
-                        Thread.currentThread().interrupt();
-                    } finally {
-                        if (lock.isHeldByCurrentThread()) {
-                            lock.unlock();
-                        } else {
-                            logger.warn("Lock not held by current thread, skipping unlock");
-                        }
-                    }
+                    putToRedis(query, entries);
                 }
             } catch (Exception e) {
                 logger.error("Failed to read from the store.", e);
@@ -202,34 +177,38 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                 if (subresult != null) {
                     results.put(key, subresult);
                     if (ksqs[i] != null) {
-                        logger.info("adding to cache subresult {}", subresult);
-                        redisCache.fastPutAsync(ksqs[i], serializer.serialize(subresult), cacheTimeMS, TimeUnit.MILLISECONDS);
-                        RLock lock = redisIndexKeys.getLock(ksqs[i].getKey());
-                        try {
-                            if (lock.tryLock(1, 2, TimeUnit.SECONDS)) {
-                                ArrayList<KeySliceQuery> queryList = redisIndexKeys.get(ksqs[i].getKey());
-                                if (queryList == null)
-                                    queryList = new ArrayList<>();
-                                queryList.add(ksqs[i]);
-                                redisIndexKeys.fastPut(ksqs[i].getKey(), queryList, cacheTimeMS, TimeUnit.MILLISECONDS);
-                            } else {
-                                logger.warn("Failed to acquire lock for key {}", ksqs[i].getKey());
-                            }
-                        } catch (InterruptedException e) {
-                            logger.warn("Interrupted while waiting for lock", e);
-                            Thread.currentThread().interrupt();
-                        } finally {
-                            if (lock.isHeldByCurrentThread()) {
-                                lock.unlock();
-                            } else {
-                                logger.warn("Lock not held by current thread, skipping unlock");
-                            }
-                        }
+                        putToRedis(ksqs[i], subresult);
                     }
                 }
             }
         }
         return results;
+    }
+
+    private void putToRedis(KeySliceQuery keySliceQuery, EntryList entries) {
+        redisCache.fastPutAsync(keySliceQuery, serializer.serialize(entries), cacheTimeMS, TimeUnit.MILLISECONDS);
+        RLock lock = redisIndexKeys.getLock(keySliceQuery.getKey());
+        try {
+            if (lock.tryLock(1, 2, TimeUnit.SECONDS)) {
+                ArrayList<KeySliceQuery> queryList = redisIndexKeys.get(keySliceQuery.getKey());
+                if (queryList == null) {
+                    queryList = new ArrayList<>();
+                }
+                queryList.add(keySliceQuery);
+                redisIndexKeys.fastPutAsync(keySliceQuery.getKey(), queryList, cacheTimeMS, TimeUnit.MILLISECONDS);
+            } else {
+                logger.warn("Failed to acquire lock for key {}", keySliceQuery.getKey());
+            }
+        } catch (InterruptedException e) {
+            logger.warn("Interrupted while waiting for lock", e);
+            Thread.currentThread().interrupt();
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            } else {
+                logger.warn("Lock not held by current thread, skipping unlock");
+            }
+        }
     }
 
     @Override
@@ -239,41 +218,14 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
         penaltyCountdown = new CountDownLatch(PENALTY_THRESHOLD);
     }
 
-    @Override
-//    public void invalidate(StaticBuffer key, List<CachableStaticBuffer> entries) {
-//        logger.info("Invalidating key {}, get lock in thread {}", key, Thread.currentThread().getId());
-//        RLock lock = redisIndexKeys.getLock(key);
-//        if (lock.isHeldByCurrentThread()) {
-//            logger.info("Lock already held by current thread {}, proceeding with invalidation", Thread.currentThread().getId());
-//            this.invalidateInternal(key, entries);
-//        } else {
-//            try {
-//                if (lock.tryLock(1L, 2L, TimeUnit.SECONDS)) {
-//                    logger.info("Lock acquired, held by thread {}, proceeding with invalidation", Thread.currentThread().getId());
-//                    this.invalidateInternal(key, entries);
-//                } else {
-//                    logger.warn("Failed to acquire lock for key {}, held by another thread", key);
-//                }
-//            } catch (InterruptedException e) {
-//                logger.warn("Interrupted while waiting for lock", e);
-//                Thread.currentThread().interrupt();
-//            } finally {
-//                if (lock.isHeldByCurrentThread()) {
-//                    logger.info("Releasing lock held by thread {}", Thread.currentThread().getId());
-//                    lock.unlock();
-//                }
-//            }
-//        }
-//    }
-
     public void invalidate(StaticBuffer key, List<CachableStaticBuffer> entries) {
-        logger.info("Invalidating key {}", key);
+        logger.debug("Invalidating key {}", key);
         List<KeySliceQuery> keySliceQueryList = redisIndexKeys.get(key);
         if (keySliceQueryList != null) {
             List<KeySliceQuery> keySliceQueryListCopy = new ArrayList<>(keySliceQueryList);
             for (KeySliceQuery keySliceQuery : keySliceQueryListCopy) {
                 if (key.equals(keySliceQuery.getKey())) {
-                    redisCache.fastRemove(keySliceQuery);
+                    redisCache.remove(keySliceQuery);
                 }
             }
 
@@ -331,9 +283,6 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                 }
                 //Do clean up work by invalidating all entries for expired keys
                 final Map<StaticBuffer, Long> expiredKeysCopy = new HashMap<>(expiredKeys.size());
-                if (!expiredKeys.isEmpty()) {
-                    logger.info("Expiring {} keys from cache", expiredKeys.size());
-                }
                 for (Map.Entry<StaticBuffer, Long> expKey : expiredKeys.entrySet()) {
                     if (isBeyondExpirationTime(expKey.getValue()))
                         expiredKeys.remove(expKey.getKey(), expKey.getValue());
@@ -341,7 +290,9 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                         expiredKeysCopy.put(expKey.getKey(), expKey.getValue());
                 }
                 for (KeySliceQuery ksq : redisCache.keySet()) {
-                    if (expiredKeysCopy.containsKey(ksq.getKey())) redisCache.remove(ksq);
+                    if (expiredKeysCopy.containsKey(ksq.getKey())) {
+                        redisCache.remove(ksq);
+                    }
                 }
                 penaltyCountdown = new CountDownLatch(PENALTY_THRESHOLD);
                 for (Map.Entry<StaticBuffer, Long> expKey : expiredKeysCopy.entrySet()) {
