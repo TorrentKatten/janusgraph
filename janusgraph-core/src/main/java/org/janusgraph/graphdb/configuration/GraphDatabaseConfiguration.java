@@ -367,6 +367,14 @@ public class GraphDatabaseConfiguration {
         "Redis host port",
         ConfigOption.Type.MASKABLE, 6379);
 
+    public static final ConfigOption<String> REDIS_CACHE_REPLICA_HOSTS = new ConfigOption<>(CACHE_NS, "redis-cache-replica-hosts",
+        "Redis replica host names",
+        ConfigOption.Type.MASKABLE, String.class, "", s -> true);
+
+    public static final ConfigOption<String> REDIS_CACHE_REPLICA_PORTS = new ConfigOption<>(CACHE_NS, "redis-cache-replica-ports",
+        "Redis replica host ports",
+        ConfigOption.Type.MASKABLE, String.class, "", s -> true);
+
     public static final ConfigOption<Integer> REDIS_CACHE_CONNECTION_POOL_SIZE = new ConfigOption<>(CACHE_NS,"redis-cache-connectionPoolSize",
         "Redis connection maximum pool size.",
         ConfigOption.Type.MASKABLE, 64);

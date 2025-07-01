@@ -94,10 +94,10 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
 
         RedissonClient redissonClient = RedissonCache.getRedissonClient(configuration);
         redisCache = redissonClient.getMapCache(REDIS_CACHE_PREFIX + metricsName);
-        redisCache.setMaxSize(50000);
+        redisCache.setMaxSize(75000);
 
         redisIndexKeys = redissonClient.getMapCache(REDIS_INDEX_CACHE_PREFIX + metricsName);
-        redisIndexKeys.setMaxSize(50000);
+        redisIndexKeys.setMaxSize(75000);
 
         expiredKeys = new ConcurrentHashMap<>(50, 0.75f, concurrencyLevel);
         penaltyCountdown = new CountDownLatch(PENALTY_THRESHOLD);
