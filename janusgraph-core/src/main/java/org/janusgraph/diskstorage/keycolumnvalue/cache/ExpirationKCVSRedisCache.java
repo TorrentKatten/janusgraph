@@ -46,8 +46,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.janusgraph.util.datastructures.ByteSize.OBJECT_HEADER;
@@ -163,8 +165,9 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
             } else ksqs[i] = null;
             if (result != null) {
                 results.put(key, result);
+            } else {
+                remainingKeys.add(key);
             }
-            else remainingKeys.add(key);
         }
         //Request remaining ones from backend
         if (!remainingKeys.isEmpty()) {
@@ -186,7 +189,20 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
     }
 
     private void putToRedis(KeySliceQuery keySliceQuery, EntryList entries) {
-        redisCache.fastPutAsync(keySliceQuery, serializer.serialize(entries), cacheTimeMS, TimeUnit.MILLISECONDS);
+        try {
+            CompletableFuture<Boolean> putAsyncFuture = redisCache.fastPutAsync(keySliceQuery, serializer.serialize(entries), cacheTimeMS, TimeUnit.MILLISECONDS)
+                .toCompletableFuture();
+            putIndexKeysToRedis(keySliceQuery);
+            putAsyncFuture.get();
+        } catch (InterruptedException e) {
+            logger.warn("Interrupted while waiting for put data async to Redis", e);
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException e) {
+            logger.error("Put async to Redis failed ", e);
+        }
+    }
+
+    private void putIndexKeysToRedis(KeySliceQuery keySliceQuery) {
         RLock lock = redisIndexKeys.getLock(keySliceQuery.getKey());
         try {
             if (lock.tryLock(1, 2, TimeUnit.SECONDS)) {
@@ -195,12 +211,12 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                     queryList = new ArrayList<>();
                 }
                 queryList.add(keySliceQuery);
-                redisIndexKeys.fastPutAsync(keySliceQuery.getKey(), queryList, cacheTimeMS, TimeUnit.MILLISECONDS);
+                redisIndexKeys.fastPut(keySliceQuery.getKey(), queryList, cacheTimeMS, TimeUnit.MILLISECONDS);
             } else {
                 logger.warn("Failed to acquire lock for key {}", keySliceQuery.getKey());
             }
         } catch (InterruptedException e) {
-            logger.warn("Interrupted while waiting for lock", e);
+            logger.warn("Interrupted while acquiring lock from Redis", e);
             Thread.currentThread().interrupt();
         } finally {
             if (lock.isHeldByCurrentThread()) {

@@ -27,10 +27,10 @@ Configuration options that modify JanusGraph's caching behavior
 | cache.redis-cache-connectionMinimumIdleSize | Minimum idle Redis connection amount. | Integer | 24 | MASKABLE |
 | cache.redis-cache-connectionPoolSize | Redis connection maximum pool size. | Integer | 64 | MASKABLE |
 | cache.redis-cache-host | Redis host name | String | localhost | MASKABLE |
-| cache.redis-cache-replica-hosts | Redis replica host names, comma seperated if more than one | String | | MASKABLE |
-| cache.redis-cache-replica-ports | Redis replica port numbers, comma seperated if more than one and array length mustmatch replica host names. If not set, redis-cache-port is used. | String | | MASKABLE |
 | cache.redis-cache-keepAlive | Enables TCP keepAlive for connection. | Boolean | true | MASKABLE |
 | cache.redis-cache-port | Redis host port | Integer | 6379 | MASKABLE |
+| cache.redis-cache-replica-hosts | Redis replica host names | String |  | MASKABLE |
+| cache.redis-cache-replica-ports | Redis replica host ports | String |  | MASKABLE |
 | cache.tx-cache-size | Maximum size of the transaction-level cache of recently-used vertices. | Integer | 20000 | MASKABLE |
 | cache.tx-dirty-size | Initial size of the transaction-level cache of uncommitted dirty vertices. This is a performance hint for write-heavy, performance-sensitive transactional workloads. If set, it should roughly match the median vertices modified per transaction. | Integer | (no default value) | MASKABLE |
 
