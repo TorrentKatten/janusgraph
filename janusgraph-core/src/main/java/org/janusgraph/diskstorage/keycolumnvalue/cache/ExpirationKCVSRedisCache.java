@@ -30,7 +30,6 @@ import org.janusgraph.diskstorage.keycolumnvalue.SliceQuery;
 import org.janusgraph.diskstorage.keycolumnvalue.StoreTransaction;
 import org.janusgraph.diskstorage.util.CacheMetricsAction;
 import org.nustaq.serialization.FSTConfiguration;
-import org.redisson.api.RLock;
 import org.redisson.api.RMapCache;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
@@ -78,7 +77,6 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
     private final long invalidationGracePeriodMS;
     private final CleanupThread cleanupThread;
     private final RMapCache<KeySliceQuery, byte[]> redisCache;
-    private final RMapCache<StaticBuffer, ArrayList<KeySliceQuery>> redisIndexKeys;
     private static final Logger logger = LoggerFactory.getLogger(ExpirationKCVSRedisCache.class);
     private static final ObjectSerializer serializer = new JavaSerializer();
 //    private static final ObjectSerializer serializer = new FstSerializer();
@@ -97,9 +95,6 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
         RedissonClient redissonClient = RedissonCache.getRedissonClient(configuration);
         redisCache = redissonClient.getMapCache(REDIS_CACHE_PREFIX + metricsName);
         redisCache.setMaxSize(75000);
-
-        redisIndexKeys = redissonClient.getMapCache(REDIS_INDEX_CACHE_PREFIX + metricsName);
-        redisIndexKeys.setMaxSize(75000);
 
         expiredKeys = new ConcurrentHashMap<>(50, 0.75f, concurrencyLevel);
         penaltyCountdown = new CountDownLatch(PENALTY_THRESHOLD);
@@ -192,38 +187,12 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
         try {
             CompletableFuture<Boolean> putAsyncFuture = redisCache.fastPutAsync(keySliceQuery, serializer.serialize(entries), cacheTimeMS, TimeUnit.MILLISECONDS)
                 .toCompletableFuture();
-            putIndexKeysToRedis(keySliceQuery);
             putAsyncFuture.get();
         } catch (InterruptedException e) {
             logger.warn("Interrupted while waiting for put data async to Redis", e);
             Thread.currentThread().interrupt();
         } catch (ExecutionException e) {
             logger.error("Put async to Redis failed ", e);
-        }
-    }
-
-    private void putIndexKeysToRedis(KeySliceQuery keySliceQuery) {
-        RLock lock = redisIndexKeys.getLock(keySliceQuery.getKey());
-        try {
-            if (lock.tryLock(1, 2, TimeUnit.SECONDS)) {
-                ArrayList<KeySliceQuery> queryList = redisIndexKeys.get(keySliceQuery.getKey());
-                if (queryList == null) {
-                    queryList = new ArrayList<>();
-                }
-                queryList.add(keySliceQuery);
-                redisIndexKeys.fastPut(keySliceQuery.getKey(), queryList, cacheTimeMS, TimeUnit.MILLISECONDS);
-            } else {
-                logger.warn("Failed to acquire lock for key {}", keySliceQuery.getKey());
-            }
-        } catch (InterruptedException e) {
-            logger.warn("Interrupted while acquiring lock from Redis", e);
-            Thread.currentThread().interrupt();
-        } finally {
-            if (lock.isHeldByCurrentThread()) {
-                lock.unlock();
-            } else {
-                logger.warn("Lock not held by current thread, skipping unlock");
-            }
         }
     }
 
@@ -235,20 +204,6 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
     }
 
     public void invalidate(StaticBuffer key, List<CachableStaticBuffer> entries) {
-        logger.debug("Invalidating key {}", key);
-        List<KeySliceQuery> keySliceQueryList = redisIndexKeys.get(key);
-        if (keySliceQueryList != null) {
-            List<KeySliceQuery> keySliceQueryListCopy = new ArrayList<>(keySliceQueryList);
-            for (KeySliceQuery keySliceQuery : keySliceQueryListCopy) {
-                if (key.equals(keySliceQuery.getKey())) {
-                    redisCache.remove(keySliceQuery);
-                }
-            }
-
-            Preconditions.checkArgument(!hasValidateKeysOnly() || entries.isEmpty());
-            expiredKeys.put(key, getExpirationTime());
-            if (Math.random() < 1.0 / INVALIDATE_KEY_FRACTION_PENALTY) penaltyCountdown.countDown();
-        }
     }
 
     @Override
@@ -267,10 +222,6 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
         //We suffer a cache miss, hence decrease the count down
         penaltyCountdown.countDown();
         return true;
-    }
-
-    private long getExpirationTime() {
-        return System.currentTimeMillis() + cacheTimeMS;
     }
 
     private boolean isBeyondExpirationTime(long until) {

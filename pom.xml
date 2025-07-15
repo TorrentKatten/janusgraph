@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>org.janusgraph</groupId>
     <artifactId>janusgraph</artifactId>
-    <version>0.6.5-BN-10-JDK11</version>
+    <version>0.6.5-no-index-key-cache-BN-11-JDK11</version>
     <packaging>pom</packaging>
     <prerequisites>
         <maven>3.2.5</maven>
