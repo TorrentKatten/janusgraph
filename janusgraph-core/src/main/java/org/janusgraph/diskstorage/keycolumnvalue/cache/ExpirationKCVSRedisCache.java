@@ -90,11 +90,11 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
 
             if (entries == null) {
                 incActionBy(1, CacheMetricsAction.MISS, txh);
-                return store.getSlice(query, unwrapTx(txh));
-            } else {
-                return entries;
+                entries = store.getSlice(query, unwrapTx(txh));
+                putToRedis(query, entries);
             }
 
+            return entries;
         } catch (Exception e) {
             if (e instanceof JanusGraphException) throw (JanusGraphException) e;
             else if (e.getCause() instanceof JanusGraphException) throw (JanusGraphException) e.getCause();
@@ -118,7 +118,7 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
             bytResult = redisCache.get(ksqs[i]);
 
             if (bytResult != null) {
-                result = bytResult != null ? (EntryList) serializer.deserialize(bytResult) : null;
+                result =  serializer.deserialize(bytResult) ;
             } else {
                 ksqs[i] = null;
             }
@@ -173,16 +173,16 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                 queryList.add(keySliceQuery);
                 redisIndexKeys.fastPut(keySliceQuery.getKey(), queryList, cacheTimeMS, TimeUnit.MILLISECONDS);
             } else {
-                logger.warn("Failed to acquire lock for key {}", keySliceQuery.getKey());
+                logger.warn("Failed to acquire lock for key {} while writing", keySliceQuery.getKey());
             }
         } catch (InterruptedException e) {
-            logger.warn("Interrupted while acquiring lock from Redis", e);
+            logger.warn("Interrupted while acquiring lock from Redis while writing", e);
             Thread.currentThread().interrupt();
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
             } else {
-                logger.warn("Lock not held by current thread, skipping unlock");
+                logger.warn("Lock not held by current thread, skipping unlock while writing");
             }
         }
     }
@@ -207,16 +207,16 @@ public class ExpirationKCVSRedisCache extends KCVSCache {
                     }
                 }
             } else {
-                logger.warn("Failed to acquire lock for key {}", key);
+                logger.warn("Failed to acquire lock for key {} while invalidating", key);
             }
         } catch (InterruptedException e) {
-            logger.warn("Interrupted while acquiring lock from Redis", e);
+            logger.warn("Interrupted while acquiring lock from Redis while invalidating", e);
             Thread.currentThread().interrupt();
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
             } else {
-                logger.warn("Lock not held by current thread, skipping unlock");
+                logger.warn("Lock not held by current thread while invalidating, skipping unlock");
             }
         }
     }
